@@ -2,7 +2,12 @@
 chcp 65001 >nul
 title Audio Stego Hunter
 
-set PYTHON_EXE=C:\Users\gorke\AppData\Local\Programs\Python\Python314\python.exe
+where python >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+    set "PYTHON_EXE=python"
+) else (
+    set "PYTHON_EXE=py"
+)
 
 if "%~1"=="" (
     echo [!] No file dropped. Running built-in DEMO challenge...
