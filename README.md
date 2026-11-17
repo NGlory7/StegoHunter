@@ -1,5 +1,6 @@
 # 🛡️ AudioStegoHunter & Forensics Suite
 
+[![test](https://github.com/NGlory7/StegoHunter/actions/workflows/test.yml/badge.svg)](https://github.com/NGlory7/StegoHunter/actions/workflows/test.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security: Zip Bomb Protected](https://img.shields.io/badge/Security-Zip_Bomb_Protected-red.svg)](#-güvenlik-ve-zip-bomb-savunması)
@@ -46,11 +47,13 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 
 ## 🏆 CTF Benchmark & Doğrulanmış Çözümler
 
+DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Örnek dosyaların kaynakları ve telif notu: [samples/README.md](samples/README.md).
+
 Suite içindeki tüm modüller gerçek dünya CTF meydan okumalarında başarıyla test edilmiş ve doğrulanmıştır:
 
 | Challenge & CTF | Stego Vektörü | Çözülen Flag |
 | :--- | :--- | :--- |
-| **RiftCTF (chall3)** | Görsel Spektrogram (OpenCV MSER) | `riftCTF{Music_is_Fr33d0m}` |
+| **RiftCTF (chall3)** | Görsel Spektrogram (OpenCV MSER) | `riftCTF{Music_is_Fr33d0m}` (spektrogram görüntüsünden göz ile okunur) |
 | **NahamCon CTF (Beep Boop)** | DTMF Tuş Takımı & BigInt / Hex | `flag{do_you_speak_the_beep_boop}` |
 | **NahamCon CTF (Walkman)** | 16-bit PCM LSB Bit Düzlemi | `flag{do_that_bit_again}` |
 | **PicoCTF (Surfing Waves)** | 16-Seviyeli PAM Genlik Modülasyonu | `picoCTF{mU21C_1s_1337_115155af}` |

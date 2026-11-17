@@ -1,0 +1,18 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bağımlılıklar
+        run: pip install "numpy>=1.24" opencv-python-headless "Pillow>=9.5" "rich>=13" pytesseract pytest
+      - name: Regresyon testleri (CTF örnekleri + güvenlik korumaları)
+        run: python -m pytest -q
