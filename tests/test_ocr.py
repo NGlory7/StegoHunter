@@ -60,6 +60,21 @@ def test_consensus_prefix_case_insensitive():
     assert consensus_prefix([("flag", 1.0)] * 4) == "flag"  # identical readings still count
 
 
+def test_consensus_prefix_lookalike_glyphs_vote_together():
+    # Regression (CI, Ubuntu Tesseract): l/i/1 split the vote and 'flag' shrank to 'ag'
+    readings = [("fiag", 1.6), ("flag", 1.5), ("f1ag", 1.4), ("fIag", 1.3), ("flag", 1.2)]
+    assert consensus_prefix(readings).lower() in ("flag", "fiag", "f1ag")
+    from detectors.ocr_engine import repair_keyword
+    assert repair_keyword(consensus_prefix(readings)) == "flag"
+    assert consensus_prefix([("C0DE", 1.0), ("CODE", 1.0), ("COD3", 0.1), ("CODE", 1.0)]).upper().endswith("DE")
+
+
+@pytest.mark.parametrize("raw, fixed", [("fiag", "flag"), ("F1AG", "FLAG"), ("f|ag", "flag"), ("riftCTF", "riftCTF"), ("", "")])
+def test_repair_keyword(raw, fixed):
+    from detectors.ocr_engine import repair_keyword
+    assert repair_keyword(raw) == fixed
+
+
 def test_consensus_prefix_needs_support():
     assert consensus_prefix({"CTF": 1.0}) == ""
     assert consensus_prefix({}) == ""
@@ -112,7 +127,8 @@ def _banner(text, noise=0.0, seed=0):
 @pytest.mark.parametrize("noise", [0.0, 20.0])
 def test_read_banner_clean_and_noisy(noise):
     res = OCREngine().read_banner(_banner("flag{read_me}", noise=noise))
-    assert "flag{read_me}" in [c["decoded"] for c in res["decoded_candidates"]]
+    # raw readings in the message: OCR output differs between Tesseract versions (CI vs local)
+    assert "flag{read_me}" in [c["decoded"] for c in res["decoded_candidates"]], res["raw_texts"]
     assert all(c["confidence"] != "VERY HIGH" for c in res["decoded_candidates"] if "ocr_votes" in c)
 
 

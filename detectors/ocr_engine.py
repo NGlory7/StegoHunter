@@ -64,6 +64,7 @@ def normalize_flag_text(text):
     if not m:
         return None
     prefix = re.sub(r'[^A-Za-z0-9_\-]', '', m.group(1))
+    prefix = repair_keyword(prefix)
     tokens = [re.sub(r'[^A-Za-z0-9_\-!@#$%^&*+=.,]', '', t) for t in m.group(2).split()]
     tokens = [t.strip("._-,") for t in tokens if re.search(r'[A-Za-z0-9]', t)]
     body = "_".join(t for t in tokens if t)
@@ -71,6 +72,17 @@ def normalize_flag_text(text):
     if len(body) < 3:
         return None
     return prefix, body
+
+
+def repair_keyword(prefix):
+    """Keyword spelled with a look-alike glyph: 'fiag', 'f1ag', 'FIAG' -> 'flag' / 'FLAG'."""
+    return re.sub(r'(f)[iIl1|](ag)$', lambda k: k.group(1) + ("L" if k.group(1).isupper() else "l") + k.group(2),
+                  prefix or "", flags=re.IGNORECASE)
+
+
+# Glyphs OCR engines (and Tesseract versions) swap freely; they count as one vote
+_GLYPH_CLASS = {c: "l" for c in "lIi1|"}
+_GLYPH_CLASS.update({c: "o" for c in "oO0"})
 
 
 def consensus_prefix(votes, min_agreement=0.75, min_support=3):
@@ -92,8 +104,9 @@ def consensus_prefix(votes, min_agreement=0.75, min_support=3):
         reach = 0.0
         for p, w in items:
             if len(p) >= pos:
-                tally[p[-pos].lower()] += w      # 'F' and 'f' are the same glyph vote
-                spelled[p[-pos].lower()][p[-pos]] += w
+                cls = _GLYPH_CLASS.get(p[-pos], p[-pos].lower())  # 'F'/'f', 'l'/'I'/'1' vote together
+                tally[cls] += w
+                spelled[cls][p[-pos]] += w
                 reach += w
         if reach == 0 or sum(1 for p, _ in items if len(p) >= pos) < min_support:
             break
@@ -270,7 +283,7 @@ class OCREngine:
         support = sum(1 for t in result["raw_texts"] if normalize_flag_text(t))
         if body_votes and support >= MIN_OCR_SUPPORT:
             body = consensus_body(body_votes)
-            prefix = consensus_prefix(prefix_votes)
+            prefix = repair_keyword(consensus_prefix(prefix_votes))
             flag = f"{prefix}{{{body}}}"
             result["flag"] = flag
             key = body.replace("_", "")
