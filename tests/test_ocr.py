@@ -75,6 +75,21 @@ def test_repair_keyword(raw, fixed):
     assert repair_keyword(raw) == fixed
 
 
+def test_whole_prefix_vote_recovers_merged_glyphs():
+    # Regression (CI): Ubuntu Tesseract read 'fl' as 'H' in some variants -> per-char vote gave 'ag'
+    from detectors.ocr_engine import whole_prefix_vote
+    readings = [("flag", 1.5), ("flag", 1.4), ("Hag", 1.3), ("flag", 1.2), ("AHag", 1.1)]
+    assert consensus_prefix(readings) == "ag"
+    assert whole_prefix_vote(readings, "ag") == "flag"
+
+
+def test_whole_prefix_vote_does_not_invent_rift_prefix():
+    # RiftCTF: every reading guesses the start differently -> keep the conservative 'CTF'
+    from detectors.ocr_engine import whole_prefix_vote
+    readings = [("HRCTF", 1.5), ("nftCTF", 1.5), ("PRCTF", 1.4), ("cheeCTF", 1.3), ("RCTF", 1.6), ("HRCTF", 1.2)]
+    assert whole_prefix_vote(readings, consensus_prefix(readings)) == "CTF"
+
+
 def test_consensus_prefix_needs_support():
     assert consensus_prefix({"CTF": 1.0}) == ""
     assert consensus_prefix({}) == ""

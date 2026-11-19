@@ -80,6 +80,30 @@ def repair_keyword(prefix):
                   prefix or "", flags=re.IGNORECASE)
 
 
+def whole_prefix_vote(readings, char_prefix, min_share=0.5, min_count=2):
+    """
+    Second opinion on the prefix. Per-character voting stops at the first position where
+    readings disagree, so one glyph pair merged into another letter ('fl' read as 'H')
+    can shrink 'flag' to 'ag'. If a complete prefix is the outright majority of the
+    readings (and extends what per-character voting accepted) it is used instead.
+    """
+    counts, spelled = defaultdict(int), defaultdict(lambda: defaultdict(int))
+    total = 0
+    for p, _ in readings:
+        if not p:
+            continue
+        p = repair_keyword(p)
+        counts[p.lower()] += 1
+        spelled[p.lower()][p] += 1
+        total += 1
+    if not total:
+        return char_prefix
+    best, n = max(counts.items(), key=lambda kv: kv[1])
+    if n >= min_count and n / total >= min_share and best.endswith(char_prefix.lower()) and len(best) > len(char_prefix):
+        return max(spelled[best].items(), key=lambda kv: kv[1])[0]
+    return char_prefix
+
+
 # Glyphs OCR engines (and Tesseract versions) swap freely; they count as one vote
 _GLYPH_CLASS = {c: "l" for c in "lIi1|"}
 _GLYPH_CLASS.update({c: "o" for c in "oO0"})
@@ -272,7 +296,7 @@ class OCREngine:
                 prefix, body = norm
                 body_votes[body] += weight
                 if prefix:
-                    prefix_votes.append((prefix, weight))
+                    prefix_votes.append((prefix, weight, body))
 
         if text_votes:
             result["best_text"] = max(text_votes, key=text_votes.get)
@@ -283,7 +307,13 @@ class OCREngine:
         support = sum(1 for t in result["raw_texts"] if normalize_flag_text(t))
         if body_votes and support >= MIN_OCR_SUPPORT:
             body = consensus_body(body_votes)
-            prefix = repair_keyword(consensus_prefix(prefix_votes))
+            # Only readings that agree on the body get a say on the prefix: a noise reading
+            # like 'Hagtread [rme)}' must not dilute the prefix vote.
+            from difflib import SequenceMatcher
+            bkey = body.replace("_", "").lower()
+            agreeing = [(p, w) for p, w, b in prefix_votes
+                        if SequenceMatcher(None, b.replace("_", "").lower(), bkey).ratio() >= NEAR_MATCH_RATIO]
+            prefix = whole_prefix_vote(agreeing, repair_keyword(consensus_prefix(agreeing)))
             flag = f"{prefix}{{{body}}}"
             result["flag"] = flag
             key = body.replace("_", "")
