@@ -63,6 +63,10 @@ def test_new_detectors_no_false_positives_on_real_samples(name):
     sig, sr = _signal(name)
     assert SignalDecoders.detect_morse_tones(sig, sr) is None
     assert SignalDecoders.detect_fsk(sig, sr) is None
+    tone = SignalDecoders.scan_tone_regions(sig, sr)
+    assert tone["morse"] == [] and tone["fsk"] == []
+    if name != "flag.wav":
+        assert SignalDecoders.detect_dtmf(sig, sr) is None
 
 
 def test_demo_spectrogram_text_raises_ultrasonic_alarm():

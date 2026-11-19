@@ -181,28 +181,46 @@ class SignalDecoders:
         low_freqs = [697, 770, 852, 941]
         high_freqs = [1209, 1336, 1477, 1633]
 
+        freqs = np.fft.rfftfreq(frame_len, 1.0 / sample_rate)
+        bin_hz = freqs[1] if len(freqs) > 1 else 1.0
+        window = np.hanning(frame_len)
+
+        def band_power(power, f):
+            # Energy within one bin either side of the nominal tone (absorbs ±1.5 % tolerance)
+            mask = np.abs(freqs - f) <= max(bin_hz * 1.01, f * 0.015)
+            return float(power[mask].sum())
+
         for frame in frames:
             # Check frame RMS
             rms = np.sqrt(np.mean(frame ** 2))
-            if rms < 0.05:
+            key = None
+            if rms >= 0.05:
+                power = np.abs(np.fft.rfft(frame * window)) ** 2
+                power[0] = 0.0
+                total = float(power.sum()) or 1.0
+                low_p = [band_power(power, f) for f in low_freqs]
+                high_p = [band_power(power, f) for f in high_freqs]
+                lo_sorted, hi_sorted = sorted(low_p), sorted(high_p)
+                best_low, best_high = max(low_p), max(high_p)
+                # A real key press is two pure tones, one per group:
+                #  - together they hold most of the frame energy,
+                #  - each carries a meaningful share (twist limit),
+                #  - each clearly beats the runner-up of its own group.
+                is_dtmf = (
+                    (best_low + best_high) / total > 0.6
+                    and best_low / total > 0.1 and best_high / total > 0.1
+                    and best_low > 4 * lo_sorted[-2] and best_high > 4 * hi_sorted[-2]
+                )
+                if is_dtmf:
+                    key = DTMF_TABLE.get((low_freqs[int(np.argmax(low_p))], high_freqs[int(np.argmax(high_p))]))
+
+            if key is None:
                 if key_hold_count >= 2 and last_key is not None:
                     detected_keys.append(last_key)
                 last_key = None
                 key_hold_count = 0
                 continue
 
-            # FFT magnitude
-            fft_mag = np.abs(np.fft.rfft(frame * np.hanning(frame_len)))
-            freqs = np.fft.rfftfreq(frame_len, 1.0 / sample_rate)
-
-            # Find peak in low group
-            low_peaks = [fft_mag[np.argmin(np.abs(freqs - f))] for f in low_freqs]
-            high_peaks = [fft_mag[np.argmin(np.abs(freqs - f))] for f in high_freqs]
-
-            best_low = low_freqs[np.argmax(low_peaks)]
-            best_high = high_freqs[np.argmax(high_peaks)]
-
-            key = DTMF_TABLE.get((best_low, best_high))
             if key:
                 if key == last_key:
                     key_hold_count += 1
@@ -420,3 +438,94 @@ class SignalDecoders:
             "high_band_peak_hz": round(peak_hz),
             "is_suspicious": high_ratio >= threshold,
         }
+
+    @staticmethod
+    def find_tone_regions(signal, sample_rate, frame_ms=10, min_gap_s=0.3, share=0.2, pad_s=0.03):
+        """
+        Splits a track into regions of homogeneous tonal content so that different
+        transmissions placed back-to-back (e.g. Morse then FSK) can be decoded separately.
+
+        1. Active frames (RMS above an adaptive floor) are grouped into bursts; bursts closer
+           than `min_gap_s` are merged into segments.
+        2. Each segment gets a tone signature: the set of dominant frequencies (100 Hz bins)
+           that cover at least `share` of its frames.
+        3. Adjacent segments with the same signature are merged into one region.
+        Returns a list of (start_sample, end_sample) tuples.
+        """
+        frame = max(16, int(sample_rate * frame_ms / 1000.0))
+        n = len(signal) // frame
+        if n < 4:
+            return [(0, len(signal))] if len(signal) else []
+        frames = signal[: n * frame].reshape(n, frame)
+        rms = np.sqrt(np.mean(frames ** 2, axis=1))
+        floor = max(0.01, 0.15 * float(np.percentile(rms, 99)))
+        active = rms > floor
+        if not active.any():
+            return []
+
+        mag = np.abs(np.fft.rfft(frames * np.hanning(frame)[None, :], axis=1))
+        mag[:, 0] = 0
+        dom = np.round(np.fft.rfftfreq(frame, 1.0 / sample_rate)[np.argmax(mag, axis=1)] / 100.0).astype(int)
+
+        # Active bursts -> segments (merge short gaps)
+        gap_frames = int(min_gap_s * 1000 / frame_ms)
+        segments, start, last = [], None, None
+        for i in np.flatnonzero(active):
+            if start is None:
+                start = last = i
+            elif i - last > gap_frames:
+                segments.append((start, last + 1))
+                start = last = i
+            else:
+                last = i
+        segments.append((start, last + 1))
+
+        def signature(a, b):
+            seg = dom[a:b][active[a:b]]
+            vals, counts = np.unique(seg, return_counts=True)
+            # Merge neighbouring 100 Hz bins so a tone on a bin edge stays one entry
+            sig = set()
+            for v, c in zip(vals, counts):
+                if c / len(seg) >= share and not ({v - 1, v + 1} & sig):
+                    sig.add(int(v))
+            return frozenset(sig)
+
+        regions = []
+        for a, b in segments:
+            sig = signature(a, b)
+            if regions and regions[-1][2] == sig:
+                regions[-1][1] = b
+            else:
+                regions.append([a, b, sig])
+
+        pad = int(pad_s * sample_rate)
+        return [(max(0, a * frame - pad), min(len(signal), b * frame + pad)) for a, b, _ in regions]
+
+    @staticmethod
+    def scan_tone_regions(signal, sample_rate):
+        """
+        Runs the Morse and FSK decoders on the whole track and on every tone region.
+        Returns {"morse": [...], "fsk": [...], "regions": [(t0, t1), ...]} where each
+        result carries a "region" key with its start/end time in seconds.
+        """
+        out = {"morse": [], "fsk": [], "regions": []}
+        spans = [(0, len(signal))]
+        regions = SignalDecoders.find_tone_regions(signal, sample_rate)
+        if len(regions) > 1:
+            spans += regions
+        out["regions"] = [(round(float(a) / sample_rate, 3), round(float(b) / sample_rate, 3)) for a, b in regions]
+
+        seen = {"morse": set(), "fsk": set()}
+        for a, b in spans:
+            chunk = signal[a:b]
+            for key, fn, text_key in (("morse", SignalDecoders.detect_morse_tones, "decoded_text"),
+                                      ("fsk", SignalDecoders.detect_fsk, "bitstream")):
+                res = fn(chunk, sample_rate)
+                if not res or res.get(text_key) in seen[key]:
+                    continue
+                seen[key].add(res.get(text_key))
+                res["region"] = (round(float(a) / sample_rate, 3), round(float(b) / sample_rate, 3))
+                out[key].append(res)
+            if (a, b) == (0, len(signal)) and (out["morse"] or out["fsk"]):
+                break  # whole track already decodes cleanly; no need to split
+        return out

@@ -46,7 +46,7 @@ def test_engine_report_contains_every_vector(multi_vector_report, flag):
 def test_engine_report_has_new_sections(multi_vector_report):
     _, data = multi_vector_report
     assert data["metadata"]["chunks"][0]["id"] == "LIST"
-    lo, hi = data["fsk"]["mark_space_hz"]
+    lo, hi = data["fsk"][0]["mark_space_hz"]
     assert abs(lo - 1200) < 100 and abs(hi - 2200) < 100
     assert "band_ratios" in data["spectral_bands"]
 

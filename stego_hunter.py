@@ -98,10 +98,20 @@ class StegoHunterEngine:
         # 4. Audio Signal Decoders (Morse / DTMF / PAM)
         console.print("\n[bold cyan][*] Stage 3:[/bold cyan] Testing Audio Signal Envelopes & Modulation (Morse, DTMF, PAM)...")
         primary_signal = next(iter(container.channels.values()))
-        morse_res = SignalDecoders.detect_morse_tones(primary_signal, container.sample_rate)
-        if morse_res:
-            console.print(f"    [bold green]✓ Morse Code Tone Detected:[/bold green] [bold white]{morse_res['decoded_text']}[/bold white] (Raw: {morse_res['raw_morse']})")
-        else:
+        # Morse & FSK run per tone region, so back-to-back transmissions don't mask each other
+        tone_scan = SignalDecoders.scan_tone_regions(primary_signal, container.sample_rate)
+        if len(tone_scan["regions"]) > 1:
+            spans = ", ".join(f"{a:.2f}-{b:.2f}s" for a, b in tone_scan["regions"])
+            console.print(f"    [.] Track split into {len(tone_scan['regions'])} tone regions: {spans}")
+        morse_list = tone_scan["morse"]
+        morse_res = morse_list[0] if morse_list else None
+        for i, m in enumerate(morse_list):
+            t0, t1 = m["region"]
+            console.print(f"    [bold green]✓ Morse Code Tone Detected[/bold green] ({t0:.2f}-{t1:.2f}s): [bold white]{m['decoded_text']}[/bold white] (Raw: {m['raw_morse']})")
+            if i > 0:  # the first one is reported through the classic morse_result slot
+                extra_secrets.append({"time": f"{t0:.2f}-{t1:.2f}s", "source": "Tone Envelope", "type": m["type"],
+                                      "content": m["decoded_text"], "is_flag": True})
+        if not morse_list:
             console.print("    [.] No prominent Morse tone envelope detected.")
 
         dtmf_res = SignalDecoders.detect_dtmf(primary_signal, container.sample_rate)
@@ -116,17 +126,19 @@ class StegoHunterEngine:
             for msg in pam_res.get("messages", []):
                 console.print(f"      [bold red]🎯 Flag Detected in Amplitude Stream:[/bold red] {msg['decoded']}")
 
-        fsk_res = SignalDecoders.detect_fsk(primary_signal, container.sample_rate)
-        if fsk_res:
-            lo, hi = fsk_res["mark_space_hz"]
-            console.print(f"    [bold green]✓ Binary FSK Detected:[/bold green] {lo} / {hi} Hz @ ~{fsk_res['baud_estimate']} baud")
-            for msg in fsk_res.get("messages", []):
+        fsk_res = tone_scan["fsk"]
+        for f in fsk_res:
+            lo, hi = f["mark_space_hz"]
+            t0, t1 = f["region"]
+            when = f"{t0:.2f}-{t1:.2f}s"
+            console.print(f"    [bold green]✓ Binary FSK Detected[/bold green] ({when}): {lo} / {hi} Hz @ ~{f['baud_estimate']} baud")
+            for msg in f.get("messages", []):
                 console.print(f"      [bold red]🎯 Flag Decoded from FSK:[/bold red] {msg['decoded']}")
-                extra_secrets.append({"time": "Audio Signal", "source": "Binary FSK", "type": msg["type"],
+                extra_secrets.append({"time": when, "source": "Binary FSK", "type": msg["type"],
                                       "content": msg["decoded"], "is_flag": msg.get("is_flag", True)})
-            if not fsk_res.get("messages") and fsk_res.get("decoded_text"):
-                extra_secrets.append({"time": "Audio Signal", "source": "Binary FSK", "type": "Decoded Bitstream",
-                                      "content": fsk_res["decoded_text"][:200], "is_flag": False})
+            if not f.get("messages") and f.get("decoded_text"):
+                extra_secrets.append({"time": when, "source": "Binary FSK", "type": "Decoded Bitstream",
+                                      "content": f["decoded_text"][:200], "is_flag": False})
 
         spectral_res = SignalDecoders.analyze_spectral_bands(primary_signal, container.sample_rate)
         if spectral_res and spectral_res.get("is_suspicious"):
@@ -163,7 +175,7 @@ class StegoHunterEngine:
             self.output_dir,
             dtmf_result=dtmf_res,
             extra_secrets=extra_secrets,
-            extra_sections={"metadata": meta_res, "fsk": fsk_res, "spectral_bands": spectral_res}
+            extra_sections={"metadata": meta_res, "fsk": fsk_res, "morse": morse_list, "tone_regions": tone_scan["regions"], "spectral_bands": spectral_res}
         )
         console.print(f"\n[bold green][+] Forensic Report Ready:[/bold green] [underline]file:///{report_path.replace(os.sep, '/')}[/underline]\n")
         return report_path

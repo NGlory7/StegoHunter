@@ -25,6 +25,8 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 * **DTMF Tuş Takımı & BigInt Çözücü:** Telefon tuşlama seslerini (DTMF) FFT ile okur; büyük tamsayı (BigInt) $\rightarrow$ Hex $\rightarrow$ ASCII dönüşümüyle bayrağı otomatik bulur.
 * **Mors Alfabesi Dekoderi:** Ses dalgasındaki bip seslerini enerji zarfı analiziyle çözer; nokta/çizgi uzunlukları 2-kümeli k-means ile ayrılır, 25 ms'den kısa tıklama/davul darbeleri elenir.
 * **Binary FSK Dekoderi:** İki tonlu frekans kaydırmalı modülasyonu (modem / Bell 202 tarzı) 1 ms çözünürlükle izler, baud hızını ve mark/space frekanslarını otomatik tahmin edip bit akışını metne çevirir.
+* **Ton Bölgesi Ayrıştırma:** Parça, sessizlik ve baskın frekans imzasına göre bölgelere ayrılır; peş peşe gelen Morse ve FSK yayınları birbirini maskelemeden ayrı ayrı çözülür.
+* **DTMF Doğrulaması:** Bir kare ancak iki grup tonunun ikisi de enerjinin çoğunu taşıyor ve kendi grubunda baskınsa tuş sayılır; müzik, FSK ve gürültüdeki sahte diziler elenir.
 * **Ultrasonik Bant Profili:** 15 kHz üstündeki enerji oranını ölçer; spektrogram yazısı ve gizli taşıyıcılar için erken uyarı verir.
 * **PAM (Pulse Amplitude Modulation) Dekoderi:** Ses örneklerindeki 16 seviyeli (hex) ve 2 seviyeli (binary) ayrık genlik basamaklarını okuyup bayrağı çözer.
 * **Kapsamlı Metin Dekoderi:** Base64, Base32, Hex, Binary (MSB/LSB-first), ondalık ASCII, ROT13, Sezar brute-force (25 kaydırma), Atbash ve tersine çevrilmiş (reversed) bayrak desenlerini (`flag{...}`, `picoCTF{...}`, `riftCTF{...}`) yakalar.
@@ -58,7 +60,7 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 
 ## 🏆 CTF Benchmark & Doğrulanmış Çözümler
 
-DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Ayrıca `tests/synth.py` içindeki deterministik sinyal üreticileriyle her dedektör (Morse, DTMF, PAM, FSK, LSB, carving, metadata, zip-bomb) için 160+ birim ve uçtan uca test çalışır:
+DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Ayrıca `tests/synth.py` içindeki deterministik sinyal üreticileriyle her dedektör (Morse, DTMF, PAM, FSK, LSB, carving, metadata, zip-bomb) için 170+ birim ve uçtan uca test çalışır:
 
 ```powershell
 python -m pytest -q

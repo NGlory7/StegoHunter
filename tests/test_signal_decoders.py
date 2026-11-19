@@ -156,3 +156,67 @@ def test_spectral_ratios_sum_to_one():
     sig = np.random.default_rng(1).normal(0, 0.2, SR).astype(np.float32)
     res = S.analyze_spectral_bands(sig, SR)
     assert sum(res["band_ratios"].values()) == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------- DTMF yanlış pozitif koruması ----------------
+
+@pytest.mark.parametrize("sig", [
+    synth.tone(1209, 1.0),                                  # single DTMF-group tone, no partner
+    synth.fsk_signal(b"flag{not_dtmf}"),                    # 1200 Hz sits right next to 1209 Hz
+    synth.morse_signal("SOS", freq=770),                    # low-group tone alone
+    np.random.default_rng(5).normal(0, 0.3, SR).astype(np.float32),
+    synth.tone(440, 1.0) + synth.tone(3000, 1.0),           # two tones, neither DTMF
+])
+def test_dtmf_rejects_non_dtmf_audio(sig):
+    assert S.detect_dtmf(sig, SR) is None
+
+
+def test_dtmf_survives_moderate_noise():
+    sig = synth.dtmf_signal("0123456789")
+    sig = sig + np.random.default_rng(2).normal(0, 0.02, len(sig)).astype(np.float32)
+    assert S.detect_dtmf(sig, SR)["sequence"] == "0123456789"
+
+
+# ---------------- Ton bölgeleri (karışık sinyaller) ----------------
+
+def _morse_then_fsk(gap=0.5):
+    return np.concatenate([synth.morse_signal("CTF FLAG"), synth.silence(gap), synth.fsk_signal(b"flag{fsk_after_morse}")])
+
+
+def test_tone_regions_split_morse_and_fsk():
+    regions = S.find_tone_regions(_morse_then_fsk(), SR)
+    assert len(regions) == 2
+    (a0, a1), (b0, b1) = regions
+    assert a1 <= b0, "regions must not overlap"
+
+
+def test_scan_tone_regions_decodes_both_transmissions():
+    res = S.scan_tone_regions(_morse_then_fsk(), SR)
+    assert [m["decoded_text"] for m in res["morse"]] == ["CTF FLAG"]
+    assert "flag{fsk_after_morse}" in [m["decoded"] for f in res["fsk"] for m in f["messages"]]
+    assert res["fsk"][0]["region"][0] > res["morse"][0]["region"][1] - 0.1
+
+
+def test_scan_tone_regions_fsk_then_morse_order():
+    sig = np.concatenate([synth.fsk_signal(b"flag{fsk_first}"), synth.silence(0.6), synth.morse_signal("SOS")])
+    res = S.scan_tone_regions(sig, SR)
+    assert [m["decoded_text"] for m in res["morse"]] == ["SOS"]
+    assert "flag{fsk_first}" in [m["decoded"] for f in res["fsk"] for m in f["messages"]]
+
+
+def test_scan_tone_regions_two_morse_messages_on_different_pitches():
+    sig = np.concatenate([synth.morse_signal("ONE", freq=600), synth.silence(0.8), synth.morse_signal("TWO", freq=1500)])
+    res = S.scan_tone_regions(sig, SR)
+    text = " ".join(m["decoded_text"] for m in res["morse"]).split()
+    assert text == ["ONE", "TWO"]
+
+
+def test_scan_tone_regions_single_transmission_is_not_split():
+    res = S.scan_tone_regions(synth.morse_signal("HELLO WORLD"), SR)
+    assert [m["decoded_text"] for m in res["morse"]] == ["HELLO WORLD"]
+    assert len(res["regions"]) == 1
+
+
+def test_find_tone_regions_silence_and_empty():
+    assert S.find_tone_regions(np.zeros(SR, dtype=np.float32), SR) == []
+    assert S.find_tone_regions(np.array([], dtype=np.float32), SR) == []
