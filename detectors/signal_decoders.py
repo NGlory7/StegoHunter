@@ -12,7 +12,23 @@ class SignalDecoders:
     """Detects and decodes Morse code audio tones, DTMF keypad dial tones, and audio phase anomalies."""
 
     @staticmethod
-    def detect_morse_tones(signal, sample_rate, window_ms=25):
+    def _two_means(values, iterations=20):
+        """1-D k-means with k=2. Returns (low_centre, high_centre)."""
+        vals = np.asarray(values, dtype=np.float64)
+        lo, hi = float(vals.min()), float(vals.max())
+        for _ in range(iterations):
+            split = (lo + hi) / 2.0
+            low, high = vals[vals <= split], vals[vals > split]
+            if len(low) == 0 or len(high) == 0:
+                break
+            new_lo, new_hi = float(low.mean()), float(high.mean())
+            if new_lo == lo and new_hi == hi:
+                break
+            lo, hi = new_lo, new_hi
+        return lo, hi
+
+    @staticmethod
+    def detect_morse_tones(signal, sample_rate, window_ms=10):
         """
         Analyzes audio envelope to identify continuous on-off keying (Morse code beeps).
         Returns decoded text and raw morse string if found.
@@ -59,23 +75,32 @@ class SignalDecoders:
         if len(active_runs) < 4:
             return None
 
-        min_len = np.percentile(active_runs, 20)
-        dot_unit = max(1, min_len)
+        # Envelope smearing makes pulses look longer and gaps shorter than their nominal
+        # unit lengths, so dots/dashes are separated by 1-D 2-means clustering and gap
+        # thresholds are derived from those cluster centres (dot ~ 1 unit, dash ~ 3 units).
+        dot_len, dash_len = SignalDecoders._two_means(active_runs)
+        if dash_len < dot_len * 1.8:
+            # Only one pulse length present (e.g. 'EEE' or 'TTT'): treat all as dots
+            dot_len = float(np.median(active_runs))
+            dash_len = dot_len * 3.0
+        # Plausibility: even 40 WPM Morse has 30 ms dots; shorter "pulses" are clicks,
+        # drum hits or spectrogram-art columns, not keyed tones.
+        if dot_len * window_ms < 25:
+            return None
+        pulse_split = (dot_len + dash_len) / 2.0
+        letter_gap = (dot_len + dash_len) / 2.0
+        word_gap = dash_len * 1.6
 
         morse_tokens = []
-        for state, length in runs:
+        for idx, (state, length) in enumerate(runs):
             if state == 1:
-                # Pulse: Dot or Dash
-                if length > dot_unit * 2.2:
-                    morse_tokens.append("-")
-                else:
-                    morse_tokens.append(".")
-            else:
-                # Silence: intra-character (1 unit), intra-letter (3 units), or intra-word (7 units)
-                if length > dot_unit * 5.0:
-                    morse_tokens.append("   ")  # word space
-                elif length > dot_unit * 2.0:
-                    morse_tokens.append(" ")   # letter space
+                morse_tokens.append("-" if length > pulse_split else ".")
+            elif 0 < idx < len(runs) - 1:
+                # Silence: intra-character (1 unit), letter (3 units) or word (7 units)
+                if length > word_gap:
+                    morse_tokens.append("   ")
+                elif length > letter_gap:
+                    morse_tokens.append(" ")
 
         morse_str = "".join(morse_tokens).strip()
         decoded_text = TextDecoderHub.decode_morse(morse_str)
@@ -227,6 +252,12 @@ class SignalDecoders:
             except Exception:
                 pass
 
+            # 3. Mixed-width ASCII decimal ('70 76 65 71 123 ...' typed without separators)
+            var_txt = TextDecoderHub.decode_concatenated_decimal("".join(c for c in sequence if c.isdigit()))
+            if var_txt:
+                messages.extend(TextDecoderHub.analyze_string(var_txt))
+            messages = TextDecoderHub._dedupe(messages)
+
             return {
                 "type": "DTMF Keypad Tones",
                 "sequence": sequence,
@@ -234,3 +265,158 @@ class SignalDecoders:
                 "confidence": "VERY HIGH" if messages else "HIGH"
             }
         return None
+
+    @staticmethod
+    def _dominant_freq_track(signal, sample_rate, win_ms=5.0, hop_ms=1.0, min_rms=0.02):
+        """Returns per-hop dominant frequency (Hz) and an 'active' mask (frame RMS above floor)."""
+        win = max(32, int(sample_rate * win_ms / 1000.0))
+        hop = max(1, int(sample_rate * hop_ms / 1000.0))
+        if len(signal) < win * 4:
+            return None, None
+        n_frames = 1 + (len(signal) - win) // hop
+        idx = np.arange(win)[None, :] + hop * np.arange(n_frames)[:, None]
+        frames = signal[idx].astype(np.float32)
+        rms = np.sqrt(np.mean(frames ** 2, axis=1))
+        n_fft = 1 << int(np.ceil(np.log2(win * 4)))  # zero-pad for finer frequency bins
+        mag = np.abs(np.fft.rfft(frames * np.hanning(win)[None, :], n=n_fft, axis=1))
+        mag[:, 0] = 0
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sample_rate)
+        dom = freqs[np.argmax(mag, axis=1)]
+        return dom, rms > min_rms
+
+    @staticmethod
+    def detect_fsk(signal, sample_rate, max_seconds=120):
+        """
+        Detects binary FSK (two alternating carrier tones, e.g. Bell 202 / modem / 'beep-bop' bits).
+        Tracks the dominant frequency every 1 ms, verifies exactly two tone clusters dominate,
+        estimates the bit duration from run lengths and decodes the bitstream as text.
+        """
+        if len(signal) == 0 or sample_rate <= 0:
+            return None
+        signal = signal[: int(sample_rate * max_seconds)]
+        dom, active = SignalDecoders._dominant_freq_track(signal, sample_rate)
+        if dom is None or active.sum() < 40:
+            return None
+
+        act = dom[active]
+        # Two-cluster split around the median of active tones
+        split = float(np.median(act))
+        low, high = act[act < split], act[act >= split]
+        if len(low) < 10 or len(high) < 10:
+            # Median can land exactly on one tone - fall back to midpoint of extremes
+            split = (float(np.percentile(act, 5)) + float(np.percentile(act, 95))) / 2.0
+            low, high = act[act < split], act[act >= split]
+            if len(low) < 10 or len(high) < 10:
+                return None
+        f0, f1 = float(np.median(low)), float(np.median(high))
+        if f1 - f0 < 150:
+            return None
+        # Tones must be stable: most frames within 15% of their cluster centre
+        tol0, tol1 = max(60.0, 0.15 * f0), max(60.0, 0.15 * f1)
+        stable = (np.abs(low - f0) < tol0).mean() > 0.85 and (np.abs(high - f1) < tol1).mean() > 0.85
+        if not stable:
+            return None
+
+        # Symbols: 0 (low tone), 1 (high tone), -1 (silence)
+        symbols = np.where(active, (dom >= split).astype(np.int8), -1)
+        runs = []
+        cur, count = symbols[0], 1
+        for v in symbols[1:]:
+            if v == cur:
+                count += 1
+            else:
+                runs.append((int(cur), count))
+                cur, count = v, 1
+        runs.append((int(cur), count))
+
+        tone_runs = [c for s, c in runs if s != -1 and c >= 3]
+        if len(tone_runs) < 8:
+            return None
+        unit = float(np.percentile(tone_runs, 10))
+        # Refine: average of runs that look like single bits
+        singles = [c for c in tone_runs if c < unit * 1.5]
+        if singles:
+            unit = float(np.mean(singles))
+        if unit < 3:
+            return None
+
+        bit_chunks, current = [], []
+        for s, c in runs:
+            if s == -1:
+                if current:
+                    bit_chunks.append("".join(current))
+                    current = []
+                continue
+            n_bits = int(round(c / unit))
+            current.append(str(s) * n_bits)
+        if current:
+            bit_chunks.append("".join(current))
+        bits = "".join(bit_chunks)
+        if len(bits) < 24:
+            return None
+
+        messages = []
+        decoded_text = None
+        for order in ("big", "little"):
+            txt = TextDecoderHub.decode_binary_string(bits, bitorder=order)
+            if txt:
+                decoded_text = decoded_text or txt
+                messages.extend(TextDecoderHub.analyze_string(txt))
+        messages.extend(TextDecoderHub.analyze_string(bits))
+        messages = TextDecoderHub._dedupe(messages)
+
+        return {
+            "type": "Binary FSK (Two-Tone Frequency Shift Keying)",
+            "mark_space_hz": (round(f0), round(f1)),
+            "baud_estimate": round(1000.0 / unit, 1),
+            "bitstream": bits[:512],
+            "decoded_text": decoded_text,
+            "messages": messages,
+            "confidence": "VERY HIGH" if messages else ("HIGH" if decoded_text else "MEDIUM"),
+        }
+
+    @staticmethod
+    def analyze_spectral_bands(signal, sample_rate, high_cutoff=15000.0, threshold=0.08):
+        """
+        Measures how much energy sits in the near-ultrasonic band (>= high_cutoff Hz).
+        Natural recordings rarely carry much energy there; spectrogram text, hidden
+        carriers and watermarks usually do. Returns band ratios and a suspicion flag.
+        """
+        if len(signal) < 1024 or sample_rate <= 0:
+            return None
+        nyquist = sample_rate / 2.0
+        if high_cutoff >= nyquist:
+            return {"high_band_ratio": 0.0, "is_suspicious": False, "note": "Sample rate too low for high-band analysis"}
+
+        n_fft = 4096
+        n_frames = len(signal) // n_fft
+        frames = signal[: n_frames * n_fft].reshape(n_frames, n_fft)
+        if n_frames > 400:  # subsample long files evenly
+            frames = frames[np.linspace(0, n_frames - 1, 400).astype(int)]
+        power = (np.abs(np.fft.rfft(frames * np.hanning(n_fft)[None, :], axis=1)) ** 2).sum(axis=0)
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sample_rate)
+        total = float(power[1:].sum())
+        if total <= 0:
+            return None
+
+        bands = {
+            "sub_bass_<250Hz": (0, 250),
+            "low_mid_250-2k": (250, 2000),
+            "high_mid_2k-8k": (2000, 8000),
+            "presence_8k-15k": (8000, high_cutoff),
+            "ultrasonic_>=15k": (high_cutoff, nyquist + 1),
+        }
+        ratios = {name: round(float(power[(freqs >= lo) & (freqs < hi)].sum()) / total, 4) for name, (lo, hi) in bands.items()}
+        high_ratio = ratios["ultrasonic_>=15k"]
+
+        # Peak frequency inside the high band (where a hidden carrier would sit)
+        hb = freqs >= high_cutoff
+        peak_hz = float(freqs[hb][np.argmax(power[hb])]) if hb.any() else 0.0
+
+        return {
+            "type": "Spectral Band Energy Profile",
+            "band_ratios": ratios,
+            "high_band_ratio": high_ratio,
+            "high_band_peak_hz": round(peak_hz),
+            "is_suspicious": high_ratio >= threshold,
+        }

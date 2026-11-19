@@ -64,7 +64,7 @@ class ConsoleHUD:
         console.print(table)
 
     @staticmethod
-    def render_anomalies_summary(snapshots_count, anomalies, lsb_results, carved_results, morse_result, pam_result=None, dtmf_result=None):
+    def render_anomalies_summary(snapshots_count, anomalies, lsb_results, carved_results, morse_result, pam_result=None, dtmf_result=None, extra_secrets=None):
         console.print(f"\n[bold green]Scan Summary:[/bold green] Generated and analyzed [cyan]{snapshots_count}[/cyan] micro-spectrogram snapshots.")
 
         # Flag / Decoded Secrets Table
@@ -99,6 +99,9 @@ class ConsoleHUD:
                 secrets_found.append(("-", "DTMF Keypad Tones", dc["type"], dc["decoded"]))
             if not dtmf_result.get("messages") and dtmf_result.get("sequence"):
                 secrets_found.append(("-", "DTMF Keypad Tones", dtmf_result["type"], dtmf_result["sequence"]))
+
+        for es in extra_secrets or []:
+            secrets_found.append((es["time"], es["source"], es["type"], str(es["content"])[:120]))
 
         if secrets_found:
             sec_table = Table(title="Decoded Hidden Messages & Secrets", border_style="bold red", header_style="bold yellow")

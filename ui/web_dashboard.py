@@ -1,11 +1,22 @@
 import os
 import json
 
+def _json_default(obj):
+    """Makes numpy scalars/arrays, tuples and bytes JSON serialisable."""
+    if hasattr(obj, "item") and getattr(obj, "ndim", 1) == 0:
+        return obj.item()
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.hex()
+    return str(obj)
+
+
 class WebDashboardGenerator:
     """Generates a comprehensive, modern HTML5 forensic audio steganography report."""
 
     @staticmethod
-    def generate(audio_container, all_snapshots, anomalies, lsb_results, carved_results, morse_result, pam_result, top_highlights, output_dir, dtmf_result=None):
+    def generate(audio_container, all_snapshots, anomalies, lsb_results, carved_results, morse_result, pam_result, top_highlights, output_dir, dtmf_result=None, extra_secrets=None, extra_sections=None):
         report_path = os.path.join(output_dir, "index.html")
         json_report_path = os.path.join(output_dir, "forensic_report.json")
 
@@ -78,6 +89,8 @@ class WebDashboardGenerator:
                     "is_flag": False
                 })
 
+        all_secrets.extend(extra_secrets or [])
+
         # Save structured JSON report
         full_json_data = {
             "target": {
@@ -105,8 +118,10 @@ class WebDashboardGenerator:
             "snapshot_count": len(all_snapshots),
             "anomaly_count": len(anomalies)
         }
+        for key, value in (extra_sections or {}).items():
+            full_json_data[key] = value
         with open(json_report_path, "w", encoding="utf-8") as jf:
-            json.dump(full_json_data, jf, indent=2)
+            json.dump(full_json_data, jf, indent=2, default=_json_default)
 
         # Build HTML
         has_anomalies = len(anomalies) > 0 or len(all_secrets) > 0

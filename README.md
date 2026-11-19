@@ -23,14 +23,19 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 
 ### 2. 🔑 Otomatik Çok Modlu Sinyal Dekoderleri (Multimodal Decoders)
 * **DTMF Tuş Takımı & BigInt Çözücü:** Telefon tuşlama seslerini (DTMF) FFT ile okur; büyük tamsayı (BigInt) $\rightarrow$ Hex $\rightarrow$ ASCII dönüşümüyle bayrağı otomatik bulur.
-* **Mors Alfabesi Dekoderi:** Ses dalgasındaki bip seslerini enerji zarfı analiziyle doğrudan çözüp metne döker.
-* **PAM (Pulse Amplitude Modulation) Dekoderi:** Ses örneklerindeki 16 seviyeli ayrık genlik basamaklarını okuyup hex/ASCII bayrağı çözer.
-* **Kapsamlı Metin Dekoderi:** Base64, Hex, Binary, ROT13/Sezar ve tersine çevrilmiş (reversed) bayrak desenlerini (`flag{...}`, `picoCTF{...}`, `riftCTF{...}`) yakalar.
+* **Mors Alfabesi Dekoderi:** Ses dalgasındaki bip seslerini enerji zarfı analiziyle çözer; nokta/çizgi uzunlukları 2-kümeli k-means ile ayrılır, 25 ms'den kısa tıklama/davul darbeleri elenir.
+* **Binary FSK Dekoderi:** İki tonlu frekans kaydırmalı modülasyonu (modem / Bell 202 tarzı) 1 ms çözünürlükle izler, baud hızını ve mark/space frekanslarını otomatik tahmin edip bit akışını metne çevirir.
+* **Ultrasonik Bant Profili:** 15 kHz üstündeki enerji oranını ölçer; spektrogram yazısı ve gizli taşıyıcılar için erken uyarı verir.
+* **PAM (Pulse Amplitude Modulation) Dekoderi:** Ses örneklerindeki 16 seviyeli (hex) ve 2 seviyeli (binary) ayrık genlik basamaklarını okuyup bayrağı çözer.
+* **Kapsamlı Metin Dekoderi:** Base64, Base32, Hex, Binary (MSB/LSB-first), ondalık ASCII, ROT13, Sezar brute-force (25 kaydırma), Atbash ve tersine çevrilmiş (reversed) bayrak desenlerini (`flag{...}`, `picoCTF{...}`, `riftCTF{...}`) yakalar.
+* **DTMF Karışık Genişlikli ASCII:** Ayraçsız `70 76 65 71 123 ...` (2 ve 3 haneli) ondalık kod dizilerini de çözer.
 
 ### 3. 🔬 LSB (En Önemsiz Bit) & Shannon Entropi Analizi
 * 16-bit PCM ses örneklerinin LSB (Bit 0, Bit 1, Bit 2) katmanlarını inceler.
 * **Shannon Entropisi:** Entropi ~8.00 seviyesine çıktığında (şifreli/sıkıştırılmış veri gömülme ihtimali) kırmızı alarm verir.
 * **2D Bit-Plane Görselleştirmesi:** LSB bitlerini 2 boyutlu siyah-beyaz piksel matrisi (`lsb_bitplane_bit0.png`) olarak görselleştirir.
+* **LSB İçinde Gömülü Dosya:** Bit düzlemine doğrudan yazılmış ZIP/PNG/PDF/ELF gibi dosya imzalarını bulur.
+* 8/16/24/32-bit PCM desteği.
 
 ### 4. 🛡️ Güvenlik ve Zip Bomb Savunması (Decompression Shield)
 * Dosyaların sonuna (slack space) veya içine gömülmüş arşivleri incelerken **Zip Bomb, Decompression Bomb ve DoS saldırılarına** karşı koruma sağlar:
@@ -41,13 +46,25 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 
 ### 5. 📂 Adli Dosya Ayıklama (Slack Space & File Carving)
 * WAV başlığındaki beyan edilen boyut ile gerçek dosya boyutu arasındaki fazlalık byte'ları (Slack Space) tespit eder.
-* ZIP, RAR, 7Z, PNG, JPEG, PDF gibi gömülü dosyaları güvenle ayıklar (`carved_payloads/`).
+* ZIP, RAR, 7Z, PNG, JPEG, PDF, GIF, GZIP, BZIP2, XZ, ELF, Ogg, FLAC gibi gömülü dosyaları güvenle ayıklar (`carved_payloads/`).
+* Slack alanının başında değil, **içinde herhangi bir offset'te** (ör. dolgu + ZIP) saklanan dosyaları da bulur.
+
+### 6. 🏷️ RIFF Metadata & Başlık Adli Analizi
+* LIST/INFO (başlık, sanatçı, yorum) ve diğer chunk'lardaki gizli bayrakları tüm metin dekoderlerinden geçirir.
+* RIFF boyut tutarsızlığı, standart dışı chunk kimlikleri ve chunk içine gömülü dosya imzaları için alarm üretir.
+* IEEE float (32/64-bit) ve `WAVE_FORMAT_EXTENSIBLE` WAV dosyalarını doğru okur.
 
 ---
 
 ## 🏆 CTF Benchmark & Doğrulanmış Çözümler
 
-DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Örnek dosyaların kaynakları ve telif notu: [samples/README.md](samples/README.md).
+DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Ayrıca `tests/synth.py` içindeki deterministik sinyal üreticileriyle her dedektör (Morse, DTMF, PAM, FSK, LSB, carving, metadata, zip-bomb) için 160+ birim ve uçtan uca test çalışır:
+
+```powershell
+python -m pytest -q
+```
+
+ Örnek dosyaların kaynakları ve telif notu: [samples/README.md](samples/README.md).
 
 Suite içindeki tüm modüller gerçek dünya CTF meydan okumalarında başarıyla test edilmiş ve doğrulanmıştır:
 
@@ -110,14 +127,16 @@ AudioStegoHunter/
 ├── detectors/
 │   ├── file_carver.py        # Gömülü arşiv ve dosya kazıma (Magic bytes)
 │   ├── lsb_analyzer.py       # Bit 0-2 entropi analizi ve 2D bit-plane üretimi
+│   ├── metadata_scanner.py   # RIFF chunk metadata ve başlık tutarlılık analizi
 │   ├── ocr_engine.py         # QR kod ve görsel sembol tarayıcı
-│   ├── signal_decoders.py    # DTMF, Morse ve PAM genlik modülasyon dekoderleri
+│   ├── signal_decoders.py    # DTMF, Morse, PAM, FSK dekoderleri ve spektral bant profili
 │   └── sliding_spectrogram.py # Kayan pencere radarı, OpenCV MSER harf tespiti ve büyüteç
 ├── decoders/
-│   └── text_decoders.py      # Base64, Hex, ROT13, Binary ve Flag Regex motoru
+│   └── text_decoders.py      # Base64/32, Hex, Binary, ROT13, Sezar, Atbash ve Flag Regex motoru
 ├── ui/
 │   ├── console_hud.py        # Terminal arayüzü ve Rich renkli tabloları
 │   └── web_dashboard.py      # İnteraktif HTML5 adli bilişim raporu üreticisi
+├── tests/                    # pytest: regresyon, sentetik sinyal ve uçtan uca testler
 ├── samples/                  # Doğrulanmış CTF test sesleri (flag.wav, chall3.wav, vb.)
 ├── demo_generator.py         # Çok katmanlı sentetik test ses üreticisi
 ├── stego_hunter.py           # Ana CLI çalıştırma noktası

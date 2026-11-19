@@ -13,8 +13,17 @@ MAGIC_SIGNATURES = [
     (b"\xff\xd8\xff\xe0", "JPEG JFIF Image", ".jpg"),
     (b"\xff\xd8\xff\xe1", "JPEG Exif Image", ".jpg"),
     (b"%PDF-1.", "PDF Document", ".pdf"),
-    (b"\x1f\x8b\x08", "GZIP File", ".gz")
+    (b"\x1f\x8b\x08", "GZIP File", ".gz"),
+    (b"GIF87a", "GIF Image", ".gif"),
+    (b"GIF89a", "GIF Image", ".gif"),
+    (b"\x7fELF", "ELF Executable", ".elf"),
+    (b"OggS\x00", "Ogg Container", ".ogg"),
+    (b"fLaC\x00", "FLAC Audio", ".flac"),
+    (b"BZh91AY&SY", "BZIP2 File", ".bz2"),
+    (b"\xfd7zXZ\x00", "XZ File", ".xz"),
 ]
+
+MAX_EMBEDDED_CARVES = 16
 
 class FileCarver:
     """
@@ -29,11 +38,44 @@ class FileCarver:
         os.makedirs(self.carved_dir, exist_ok=True)
         self.results = []
 
+    @staticmethod
+    def find_signatures(data, limit=MAX_EMBEDDED_CARVES, min_magic_len=1):
+        """
+        Finds every known magic signature anywhere inside `data`.
+        Returns a sorted list of (offset, type, extension) tuples (at most `limit`).
+        """
+        hits = []
+        if not data:
+            return hits
+        for magic, mtype, ext in MAGIC_SIGNATURES:
+            if len(magic) < min_magic_len:
+                continue  # short magics give false positives in noisy bitstreams
+            start = 0
+            while len(hits) < limit * 4:
+                idx = data.find(magic, start)
+                if idx == -1:
+                    break
+                hits.append((idx, mtype, ext))
+                start = idx + 1
+        hits.sort(key=lambda h: h[0])
+        # Same offset can match two signatures (e.g. RAR 4/5 prefix) - keep the first
+        unique, seen = [], set()
+        for h in hits:
+            if h[0] in seen:
+                continue
+            seen.add(h[0])
+            unique.append(h)
+        return unique[:limit]
+
     def scan_and_carve(self):
         """Executes deep file carving on slack space and trailing bytes."""
         carve_targets = []
         if self.appended_payload and len(self.appended_payload) > 16:
             carve_targets.append(("Trailing Slack Space (EOF)", self.appended_payload, 0))
+            # Files hidden further inside the slack (e.g. junk padding + ZIP)
+            for off, mtype, _ext in self.find_signatures(self.appended_payload):
+                if off > 0:
+                    carve_targets.append((f"Embedded {mtype} in Slack (+0x{off:X})", self.appended_payload[off:], off))
 
         # Avoid redundant carving
         seen_offsets = set()

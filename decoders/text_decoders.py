@@ -20,6 +20,10 @@ FLAG_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Any prefix{...} shaped token - cheap pre-filter for cipher brute-forcing
+BRACE_CANDIDATE_REGEX = re.compile(r'[A-Za-z0-9_\-]{2,20}\{[^{}\s]{3,80}\}')
+
+
 class TextDecoderHub:
     """
     Multimodal intelligence engine that tests strings against Base64, Hex, Binary,
@@ -81,6 +85,135 @@ class TextDecoderHub:
             else:
                 res.append(c)
         return "".join(res)
+
+    @staticmethod
+    def _printable_text(raw, min_len=3, min_ratio=0.85):
+        """Returns decoded text if the byte string is mostly printable ASCII, else None."""
+        if not raw:
+            return None
+        text = raw.decode('utf-8', errors='replace')
+        printable_ratio = sum(1 for c in text if 32 <= ord(c) <= 126 or c in "\r\n\t") / max(1, len(text))
+        if printable_ratio > min_ratio and len(text.strip()) >= min_len:
+            return text
+        return None
+
+    @classmethod
+    def decode_binary_string(cls, bits, bitorder="big", max_bits=1 << 18):
+        """
+        Decodes a '0'/'1' string (whitespace/commas ignored) into text.
+        bitorder='big' -> MSB first (standard), 'little' -> LSB first.
+        """
+        cleaned = "".join(c for c in bits[:max_bits * 2] if c in "01")[:max_bits]
+        usable = (len(cleaned) // 8) * 8
+        if usable < 24:
+            return None
+        out = bytearray()
+        for i in range(0, usable, 8):
+            byte = cleaned[i:i + 8]
+            if bitorder == "little":
+                byte = byte[::-1]
+            out.append(int(byte, 2))
+        return cls._printable_text(bytes(out))
+
+    @classmethod
+    def decode_base32_token(cls, token):
+        """Decodes a single clean Base32 token (RFC 4648 alphabet)."""
+        try:
+            body = token.upper().rstrip("=")
+            padded = body + "=" * ((8 - len(body) % 8) % 8)
+            return cls._printable_text(base64.b32decode(padded))
+        except Exception:
+            return None
+
+    @staticmethod
+    def caesar_shift(s, shift):
+        """Shifts alphabetic characters by `shift` positions (decoding uses a negative shift)."""
+        res = []
+        for c in s:
+            if 'a' <= c <= 'z':
+                res.append(chr((ord(c) - ord('a') + shift) % 26 + ord('a')))
+            elif 'A' <= c <= 'Z':
+                res.append(chr((ord(c) - ord('A') + shift) % 26 + ord('A')))
+            else:
+                res.append(c)
+        return "".join(res)
+
+    @staticmethod
+    def decode_atbash(s):
+        """Atbash cipher (A<->Z, B<->Y, ...). Self-inverse."""
+        res = []
+        for c in s:
+            if 'a' <= c <= 'z':
+                res.append(chr(ord('z') - (ord(c) - ord('a'))))
+            elif 'A' <= c <= 'Z':
+                res.append(chr(ord('Z') - (ord(c) - ord('A'))))
+            else:
+                res.append(c)
+        return "".join(res)
+
+    @classmethod
+    def decode_decimal_ascii(cls, s):
+        """Decodes separated decimal byte values ('102 108 97 103' -> 'flag')."""
+        nums = re.findall(r'\d{2,3}', s)
+        if len(nums) < 3:
+            return None
+        vals = [int(n) for n in nums]
+        if any(v > 255 for v in vals):
+            return None
+        return cls._printable_text(bytes(vals), min_ratio=0.95)
+
+    @staticmethod
+    def decode_concatenated_decimal(digits):
+        """
+        Decodes unseparated decimal ASCII codes of mixed width ('70761231256' style).
+        Codes 100-126 take three digits, 32-99 take two. Returns None if the digits
+        cannot be fully consumed as printable characters.
+        """
+        if not digits or not digits.isdigit():
+            return None
+        out, i = [], 0
+        while i < len(digits):
+            three = digits[i:i + 3]
+            if digits[i] == "1" and len(three) == 3 and 100 <= int(three) <= 126:
+                out.append(chr(int(three)))
+                i += 3
+                continue
+            two = digits[i:i + 2]
+            if len(two) == 2 and 32 <= int(two) <= 99:
+                out.append(chr(int(two)))
+                i += 2
+                continue
+            return None
+        return "".join(out) if len(out) >= 3 else None
+
+    @classmethod
+    def caesar_bruteforce_flags(cls, text):
+        """
+        Tries all Caesar shifts (except 13, reported as ROT13) on prefix{...} shaped
+        candidates only, so the brute-force stays cheap on long bitstream dumps.
+        Returns a list of (shift, flag) tuples.
+        """
+        hits = []
+        for cand in set(BRACE_CANDIDATE_REGEX.findall(text)):
+            for shift in range(1, 26):
+                if shift == 13:
+                    continue
+                for f in FLAG_REGEX.findall(cls.caesar_shift(cand, -shift)):
+                    hits.append((shift, f))
+        return hits
+
+    @staticmethod
+    def _dedupe(results):
+        """Keeps the first (highest-priority) finding for each decoded value."""
+        seen = set()
+        unique = []
+        for r in results:
+            key = r.get("decoded")
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(r)
+        return unique
 
     @classmethod
     def analyze_string(cls, raw_text):
@@ -166,4 +299,60 @@ class TextDecoderHub:
                     "is_flag": True
                 })
 
-        return results
+        # 6. Binary strings (01100110 01101100 ...), both bit orders
+        for token in re.findall(r'(?:[01]{8}[\s,]?){3,}', text):
+            for order in ("big", "little"):
+                decoded = cls.decode_binary_string(token, bitorder=order)
+                if not decoded:
+                    continue
+                for f in FLAG_REGEX.findall(decoded):
+                    results.append({
+                        "type": f"Binary Decoded Flag ({'MSB' if order == 'big' else 'LSB'}-first)",
+                        "decoded": f,
+                        "confidence": "VERY HIGH",
+                        "is_flag": True
+                    })
+
+        # 7. Base32 tokens
+        for token in set(re.findall(r'[A-Z2-7]{8,}={0,6}', text)):
+            decoded = cls.decode_base32_token(token)
+            if decoded:
+                for f in FLAG_REGEX.findall(decoded):
+                    results.append({
+                        "type": "Base32 Decoded Flag",
+                        "decoded": f,
+                        "confidence": "VERY HIGH",
+                        "is_flag": True
+                    })
+
+        # 8. Decimal ASCII sequences (102 108 97 103 ...)
+        for token in re.findall(r'(?:\b\d{2,3}\b[\s,;]+){3,}\b\d{2,3}\b', text):
+            decoded = cls.decode_decimal_ascii(token)
+            if decoded:
+                for f in FLAG_REGEX.findall(decoded):
+                    results.append({
+                        "type": "Decimal ASCII Decoded Flag",
+                        "decoded": f,
+                        "confidence": "VERY HIGH",
+                        "is_flag": True
+                    })
+
+        # 9. Caesar brute-force and Atbash on prefix{...} candidates
+        if BRACE_CANDIDATE_REGEX.search(text):
+            for shift, f in cls.caesar_bruteforce_flags(text):
+                results.append({
+                    "type": f"Caesar Decoded Flag (shift={shift})",
+                    "decoded": f,
+                    "confidence": "HIGH",
+                    "is_flag": True
+                })
+            for cand in set(BRACE_CANDIDATE_REGEX.findall(text)):
+                for f in FLAG_REGEX.findall(cls.decode_atbash(cand)):
+                    results.append({
+                        "type": "Atbash Decoded Flag",
+                        "decoded": f,
+                        "confidence": "HIGH",
+                        "is_flag": True
+                    })
+
+        return cls._dedupe(results)

@@ -24,6 +24,7 @@ from core.audio_loader import AudioContainer, AudioLoadError
 from core.safety import SafeArchiveInspector, SecurityAnomaly
 from detectors.file_carver import FileCarver
 from detectors.lsb_analyzer import LSBAnalyzer
+from detectors.metadata_scanner import MetadataScanner
 from detectors.signal_decoders import SignalDecoders
 from detectors.sliding_spectrogram import SlidingSpectrogramScanner
 from ui.console_hud import ConsoleHUD, console
@@ -65,6 +66,21 @@ class StegoHunterEngine:
         else:
             console.print("    [.] No trailing slack payload found.")
 
+        extra_secrets = []
+
+        # 2b. RIFF Metadata & Header Forensics
+        console.print("\n[bold cyan][*] Stage 1b:[/bold cyan] Inspecting RIFF metadata chunks & header consistency...")
+        meta_res = MetadataScanner.scan(container)
+        for a in meta_res["anomalies"]:
+            color = "red" if a["severity"] == "HIGH" else "yellow"
+            console.print(f"    [{color}]⚠ {a['type']}:[/{color}] {a['detail']}")
+        for f in meta_res["findings"]:
+            console.print(f"    [bold red]🎯 Secret in '{f['chunk']}' chunk:[/bold red] {f['decoded']}")
+            extra_secrets.append({"time": "Header", "source": f"RIFF Chunk '{f['chunk']}'", "type": f["type"],
+                                  "content": f["decoded"], "is_flag": f.get("is_flag", False)})
+        if not meta_res["anomalies"] and not meta_res["findings"]:
+            console.print(f"    [.] {len(meta_res['chunks'])} metadata chunk(s), no anomalies.")
+
         # 3. LSB Bitplane & Entropy Analysis
         console.print("\n[bold cyan][*] Stage 2:[/bold cyan] Analyzing LSB (Least Significant Bits) & Shannon Entropy...")
         lsb_analyzer = LSBAnalyzer(self.audio_path, output_dir=self.output_dir)
@@ -74,6 +90,10 @@ class StegoHunterEngine:
             console.print(f"    - LSB Bit {l['bit_index']}: Entropy = [yellow]{l['entropy']}[/yellow] / 8.00 ({ent_status})")
             if l.get("has_flag"):
                 console.print(f"      [bold red]🎯 Flag signature detected in LSB bitstream![/bold red]")
+            for sig in l.get("embedded_signatures", []):
+                console.print(f"      [bold red]📦 {sig['type']} signature in LSB bitstream[/bold red] (byte offset {sig['offset']}, order={sig['bitorder']})")
+                extra_secrets.append({"time": "Full Track", "source": f"LSB Bit {l['bit_index']}", "type": "Embedded File Signature",
+                                      "content": f"{sig['type']} @ byte {sig['offset']} ({sig['bitorder']}-endian bits)", "is_flag": False})
 
         # 4. Audio Signal Decoders (Morse / DTMF / PAM)
         console.print("\n[bold cyan][*] Stage 3:[/bold cyan] Testing Audio Signal Envelopes & Modulation (Morse, DTMF, PAM)...")
@@ -96,6 +116,22 @@ class StegoHunterEngine:
             for msg in pam_res.get("messages", []):
                 console.print(f"      [bold red]🎯 Flag Detected in Amplitude Stream:[/bold red] {msg['decoded']}")
 
+        fsk_res = SignalDecoders.detect_fsk(primary_signal, container.sample_rate)
+        if fsk_res:
+            lo, hi = fsk_res["mark_space_hz"]
+            console.print(f"    [bold green]✓ Binary FSK Detected:[/bold green] {lo} / {hi} Hz @ ~{fsk_res['baud_estimate']} baud")
+            for msg in fsk_res.get("messages", []):
+                console.print(f"      [bold red]🎯 Flag Decoded from FSK:[/bold red] {msg['decoded']}")
+                extra_secrets.append({"time": "Audio Signal", "source": "Binary FSK", "type": msg["type"],
+                                      "content": msg["decoded"], "is_flag": msg.get("is_flag", True)})
+            if not fsk_res.get("messages") and fsk_res.get("decoded_text"):
+                extra_secrets.append({"time": "Audio Signal", "source": "Binary FSK", "type": "Decoded Bitstream",
+                                      "content": fsk_res["decoded_text"][:200], "is_flag": False})
+
+        spectral_res = SignalDecoders.analyze_spectral_bands(primary_signal, container.sample_rate)
+        if spectral_res and spectral_res.get("is_suspicious"):
+            console.print(f"    [bold yellow]⚠ High near-ultrasonic energy:[/bold yellow] {spectral_res['high_band_ratio'] * 100:.1f}% above 15 kHz (peak {spectral_res['high_band_peak_hz']} Hz) - check spectrogram radar output.")
+
         # 5. Continuous Sliding-Window Spectrogram Radar (Frequent Snapshots & OCR)
         console.print(f"\n[bold cyan][*] Stage 4:[/bold cyan] Continuous Sliding-Window Radar (Window: {self.window_sec}s, Overlap: {int(self.overlap * 100)}%)...")
         scanner = SlidingSpectrogramScanner(
@@ -110,7 +146,7 @@ class StegoHunterEngine:
         console.print(f"    [✓] Processed [cyan]{len(all_snapshots)}[/cyan] micro-snapshots across all bands. Detected [bold red]{len(anomalies)}[/bold red] anomalous region(s).")
 
         # 6. Terminal Summary & Top Priority Highlights Table
-        ConsoleHUD.render_anomalies_summary(len(all_snapshots), anomalies, lsb_results, carved_results, morse_res, pam_res, dtmf_res)
+        ConsoleHUD.render_anomalies_summary(len(all_snapshots), anomalies, lsb_results, carved_results, morse_res, pam_res, dtmf_res, extra_secrets=extra_secrets)
         ConsoleHUD.render_top_highlights_table(top_highlights)
         ConsoleHUD.render_ascii_top_candidate(top_highlights, anomalies)
 
@@ -125,7 +161,9 @@ class StegoHunterEngine:
             pam_res,
             top_highlights,
             self.output_dir,
-            dtmf_result=dtmf_res
+            dtmf_result=dtmf_res,
+            extra_secrets=extra_secrets,
+            extra_sections={"metadata": meta_res, "fsk": fsk_res, "spectral_bands": spectral_res}
         )
         console.print(f"\n[bold green][+] Forensic Report Ready:[/bold green] [underline]file:///{report_path.replace(os.sep, '/')}[/underline]\n")
         return report_path

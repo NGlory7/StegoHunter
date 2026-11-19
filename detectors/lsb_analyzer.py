@@ -4,6 +4,7 @@ import wave
 import numpy as np
 import cv2
 from decoders.text_decoders import TextDecoderHub, FLAG_REGEX
+from detectors.file_carver import FileCarver
 
 class LSBAnalyzer:
     """
@@ -39,6 +40,10 @@ class LSBAnalyzer:
                     samples = np.frombuffer(frames, dtype=np.uint8)
                 elif sampwidth == 4:
                     samples = np.frombuffer(frames, dtype=np.int32)
+                elif sampwidth == 3:
+                    raw = np.frombuffer(frames[:len(frames) // 3 * 3], dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+                    samples = raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)
+                    samples = (samples ^ (1 << 23)) - (1 << 23)
                 else:
                     samples = np.frombuffer(frames, dtype=np.int16)
                 return samples, n_channels
@@ -118,6 +123,13 @@ class LSBAnalyzer:
                                 f_copy["variant"] = f"{ch_label}, Bit {bit_idx}, order={bitorder}, shift={shift}"
                                 detected_messages.append(f_copy)
 
+            # Hidden files (ZIP/PNG/...) written straight into the LSB plane
+            embedded_signatures = []
+            for bitorder in ['big', 'little']:
+                packed = np.packbits(all_bits[:padded_len].reshape(-1, 8), axis=-1, bitorder=bitorder).flatten()
+                for off, mtype, _ext in FileCarver.find_signatures(packed[:2 * 1024 * 1024].tobytes(), limit=4, min_magic_len=4):
+                    embedded_signatures.append({"offset": off, "type": mtype, "bitorder": bitorder})
+
             has_flag = any(f.get("is_flag") for f in detected_messages)
             is_suspicious_entropy = entropy > 7.92
 
@@ -127,6 +139,7 @@ class LSBAnalyzer:
                 "is_suspicious_entropy": is_suspicious_entropy,
                 "has_flag": has_flag,
                 "decoded_messages": detected_messages,
+                "embedded_signatures": embedded_signatures,
                 "bitplane_img": plane_img_rel,
                 "sample_count": len(samples)
             })

@@ -57,6 +57,25 @@ def test_clean_samples_have_no_false_flags():
     assert not (SignalDecoders.detect_pam_discrete_levels(sig) or {}).get("messages")
 
 
+@pytest.mark.parametrize("name", ["flag.wav", "picoctf_surfing_waves.wav", "riftctf_chall3.wav", "sample_challenge.wav", "wazaaa.wav"])
+def test_new_detectors_no_false_positives_on_real_samples(name):
+    # Morse / FSK hiçbir örnekte yoktur; sahte çözüm üretmemeliler
+    sig, sr = _signal(name)
+    assert SignalDecoders.detect_morse_tones(sig, sr) is None
+    assert SignalDecoders.detect_fsk(sig, sr) is None
+
+
+def test_demo_spectrogram_text_raises_ultrasonic_alarm():
+    sig, sr = _signal("sample_challenge.wav")
+    assert SignalDecoders.analyze_spectral_bands(sig, sr)["is_suspicious"]
+
+
+def test_demo_slack_is_zip_not_bogus_chunks():
+    c = AudioContainer(os.path.join(SAMPLES, "sample_challenge.wav"))
+    assert c.appended_payload.startswith(b"PK\x03\x04")
+    assert c.metadata_chunks == []
+
+
 # ---------------- Metin çözücüler ----------------
 
 def test_text_decoders():
