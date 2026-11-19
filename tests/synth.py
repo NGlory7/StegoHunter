@@ -159,3 +159,42 @@ def noisy_cover(n, seed=0, amp=3000):
     t = np.arange(n) / SR
     base = amp * np.sin(2 * np.pi * 330 * t) + rng.normal(0, amp * 0.05, n)
     return base.astype(np.int16)
+
+
+def spectrogram_text_signal(text, duration=10.0, t0=1.0, t1=9.0, f_lo=4000, f_hi=8000, sr=22050,
+                            img_h=60, cols_per_sec=60, noise=0.0, seed=0):
+    """
+    Paints `text` into the spectrogram between t0..t1 seconds and f_lo..f_hi Hz
+    (the classic 'flag drawn in the spectrogram' CTF trick). Optional white noise
+    makes the banner realistically dirty.
+    """
+    import cv2
+
+    n_cols = max(40, int((t1 - t0) * cols_per_sec))
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+    canvas = np.zeros((img_h, tw + 20), dtype=np.uint8)
+    cv2.putText(canvas, text, (10, (img_h + th) // 2), font, scale, 255, thick, cv2.LINE_AA)
+    canvas = cv2.resize(canvas, (n_cols, img_h), interpolation=cv2.INTER_AREA)
+    canvas = np.flipud(canvas)  # row 0 = lowest frequency
+
+    total = int(duration * sr)
+    audio = np.zeros(total, dtype=np.float64)
+    freqs = np.linspace(f_lo, f_hi, img_h)
+    start = int(t0 * sr)
+    spc = int((t1 - t0) * sr / n_cols)
+    t = np.arange(spc) / sr
+    win = np.hanning(spc)
+    for col in range(n_cols):
+        rows = np.flatnonzero(canvas[:, col] > 40)
+        if not len(rows):
+            continue
+        a = start + col * spc
+        if a + spc > total:
+            break
+        phase = 2 * np.pi * freqs[rows, None] * (t[None, :] + a / sr)
+        audio[a:a + spc] += (canvas[rows, col, None] / 255.0 * np.sin(phase)).sum(axis=0) * win
+    if noise:
+        audio += np.random.default_rng(seed).normal(0, noise * np.abs(audio).max(), total)
+    audio = audio / (np.abs(audio).max() or 1.0) * 0.8
+    return audio.astype(np.float32)

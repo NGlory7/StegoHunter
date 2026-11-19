@@ -17,13 +17,14 @@ def generate_multi_stego_demo(filename="sample_challenge.wav", message="FLAG{4UD
 
     # 1. Canvas for Spectrogram Text
     h = 80
-    w = 400
-    img = np.zeros((h, w), dtype=np.uint8)
-
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 1.05
     thickness = 2
     text_size = cv2.getTextSize(message, font, font_scale, thickness)[0]
+    # Canvas grows with the message: a fixed 400 px canvas silently cut long flags
+    # (e.g. 'FLAG{4UD10_5T3G0_15_FUN}' lost its last characters).
+    w = max(400, text_size[0] + 20)
+    img = np.zeros((h, w), dtype=np.uint8)
     text_x = max(10, (w - text_size[0]) // 2)
     text_y = (h + text_size[1]) // 2
     cv2.putText(img, message, (text_x, text_y), font, font_scale, 255, thickness, cv2.LINE_AA)

@@ -19,6 +19,7 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 * **OpenCV MSER Harf & Kelime Pankartı Tespiti:** Görüntüdeki harfleri taban çizgisi uyumu (baseline alignment) ve MSER ile tespit eder.
 * **Davul Darbesi ve Gürültü Filtresi:** Tüm frekansı dikey kaplayan davul/zil patlamalarını eler; gerçek metin içeren yatay bantları öne çıkarır.
 * **Otomatik Büyüteç Pankartı (Auto-Crop Banner):** Bulunan flag kesitini yüksek kontrastlı ve insan gözüyle rahatça okunabilir 1600+ px genişliğinde bir pankart olarak raporun en tepesine (**#1 VIP Highlight**) yerleştirir.
+* **Pankart OCR (Tesseract):** En iyi 5 adayın pankartı Tesseract ile okunur. Yazı pencere kenarına dayanıyorsa pencere genişletilerek bayrağın tamamı tek görüntüye alınır; aynı satırdaki kelimeler birleştirilir, müzik dokusu dikey kontrast profiliyle kırpılır. 30+ ön işleme varyantının okumaları oylanır (medoid), `(`→`{`, boşluk→`_` gibi tipik OCR hataları onarılır; emin olunamayan ön ek harfleri uydurulmaz. Sonuç `MEDIUM` güvenle, pankarta göz ile doğrulanmak üzere raporlanır.
 * **Stereo Fark Kanalı (`Channel_Diff_LR`):** Sol ve sağ kanalları birbirinden çıkararak merkezdeki vokal ve müzikleri yok eder, yalnızca gizli stego katmanını izole eder.
 
 ### 2. 🔑 Otomatik Çok Modlu Sinyal Dekoderleri (Multimodal Decoders)
@@ -60,7 +61,7 @@ Yalnızca basit CTF soruları için değil; **gerçek dünyadaki ses dosyaların
 
 ## 🏆 CTF Benchmark & Doğrulanmış Çözümler
 
-DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Ayrıca `tests/synth.py` içindeki deterministik sinyal üreticileriyle her dedektör (Morse, DTMF, PAM, FSK, LSB, carving, metadata, zip-bomb) için 170+ birim ve uçtan uca test çalışır:
+DTMF, LSB ve PAM çözümleri her push'ta `tests/test_regression.py` ile otomatik doğrulanır. Ayrıca `tests/synth.py` içindeki deterministik sinyal üreticileriyle her dedektör (Morse, DTMF, PAM, FSK, LSB, carving, metadata, zip-bomb) için 200 birim ve uçtan uca test çalışır:
 
 ```powershell
 python -m pytest -q
@@ -72,7 +73,7 @@ Suite içindeki tüm modüller gerçek dünya CTF meydan okumalarında başarıy
 
 | Challenge & CTF | Stego Vektörü | Çözülen Flag |
 | :--- | :--- | :--- |
-| **RiftCTF (chall3)** | Görsel Spektrogram (OpenCV MSER) | `riftCTF{Music_is_Fr33d0m}` (spektrogram görüntüsünden göz ile okunur) |
+| **RiftCTF (chall3)** | Görsel Spektrogram (OpenCV MSER + Tesseract OCR) | `riftCTF{Music_is_Fr33d0m}` — OCR gövdeyi `CTF{Music_is_Fr33d0m}` olarak okur; `rift` ön eki yalnızca pankartta göz ile okunur |
 | **NahamCon CTF (Beep Boop)** | DTMF Tuş Takımı & BigInt / Hex | `flag{do_you_speak_the_beep_boop}` |
 | **NahamCon CTF (Walkman)** | 16-bit PCM LSB Bit Düzlemi | `flag{do_that_bit_again}` |
 | **PicoCTF (Surfing Waves)** | 16-Seviyeli PAM Genlik Modülasyonu | `picoCTF{mU21C_1s_1337_115155af}` |
@@ -91,6 +92,12 @@ cd AudioStegoHunter
 ```bash
 pip install -r requirements.txt
 ```
+
+3. (İsteğe bağlı, önerilir) Spektrogram yazılarını otomatik okumak için Tesseract OCR:
+```powershell
+winget install --id UB-Mannheim.TesseractOCR -e
+```
+Linux: `sudo apt-get install tesseract-ocr` · macOS: `brew install tesseract`. PATH'te olmasa bile standart kurulum konumları otomatik bulunur; farklı bir yer için `TESSERACT_CMD` ortam değişkenini ayarlayın. Kurulu değilse OCR adımı atlanır, diğer her şey çalışır.
 
 ---
 
